@@ -1,0 +1,26 @@
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Build directories
+build/
+docs/
+dist/
+installer/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# CMake generated files (if not in build/)
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
