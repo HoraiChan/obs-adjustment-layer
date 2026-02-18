@@ -92,12 +92,10 @@ OBS Studio のソースツリーに組み込んでビルドする方法です。
 > On macOS, in-tree builds may fail due to legacy OpenGL / AGL-related dependencies in some OBS plugins.  
 > If you encounter build errors, please use the **Out-of-tree build** instead.
 > 
-> <small>
 > ⚠ **macOS 注意事項**  
 > macOS では、一部の OBS プラグインが依存している旧 OpenGL / AGL の影響により、  
 > in-tree ビルドが失敗する場合があります。  
 > その場合は **Out-of-tree ビルド** を利用してください。
-> </small>
 
 ---
 
