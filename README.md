@@ -112,4 +112,10 @@ OBS Studio のソースツリーに組み込んでビルドする方法です。
 
 ---
 
+## Support / 支援
+
+[![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/horaiken)
+
+---
+
 Developed by Horaiken ([@HoraiChan](https://x.com/HoraiChan))
