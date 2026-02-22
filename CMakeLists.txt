@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.10)
 
 # ==========================================
 # Plugin Version Configuration
-set(PLUGIN_VERSION "1.0.4")
+set(PLUGIN_VERSION "1.0.5")
 # ==========================================
 
 project(adjustment-layer VERSION ${PLUGIN_VERSION} LANGUAGES C CXX)

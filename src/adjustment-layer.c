@@ -249,7 +249,8 @@ static gs_texture_t *capture_source_to_sub(struct adjustment_layer_source *ctx,
      * from previous item blending. */
     gs_blend_state_push();
     gs_enable_blending(true);
-    gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+    gs_blend_function_separate(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA,
+                               GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
     gs_blend_op(GS_BLEND_OP_ADD);
 
     obs_source_video_render(src);
@@ -349,13 +350,16 @@ static void render_item_direct_normal_nocrop(obs_sceneitem_t *item,
   gs_blend_state_push();
 
   bool prev_srgb = apply_item_srgb_state(item);
+  bool prev_linear = gs_set_linear_srgb(true);
 
   gs_enable_blending(true);
-  gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+  gs_blend_function_separate(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA,
+                             GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
   gs_blend_op(GS_BLEND_OP_ADD);
 
   obs_source_video_render(src);
 
+  gs_set_linear_srgb(prev_linear);
   restore_item_srgb_state(prev_srgb);
 
   gs_blend_state_pop();
