@@ -27,6 +27,9 @@ struct adjustment_layer_source {
   /* Track sub_render size; recreate only when needed */
   uint32_t sub_w;
   uint32_t sub_h;
+
+  /* Cached scene to avoid locking sources_mutex in video_render */
+  obs_scene_t *cached_scene;
 };
 
 /* ------------------------------------------------------------------------- */
@@ -456,18 +459,30 @@ static void *adjustment_layer_create(obs_data_t *settings,
   return ctx;
 }
 
+struct destroy_graphics_data {
+  gs_texrender_t *render;
+  gs_texrender_t *sub_render;
+};
+
+static void destroy_graphics_task(void *param) {
+  struct destroy_graphics_data *d = param;
+  obs_enter_graphics();
+  if (d->render) gs_texrender_destroy(d->render);
+  if (d->sub_render) gs_texrender_destroy(d->sub_render);
+  obs_leave_graphics();
+  bfree(d);
+}
+
 static void adjustment_layer_destroy(void *data) {
   struct adjustment_layer_source *ctx = data;
   if (!ctx)
     return;
 
-  if (ctx->render) {
-    gs_texrender_destroy(ctx->render);
-    ctx->render = NULL;
-  }
-  if (ctx->sub_render) {
-    gs_texrender_destroy(ctx->sub_render);
-    ctx->sub_render = NULL;
+  if (ctx->render || ctx->sub_render) {
+    struct destroy_graphics_data *d = bzalloc(sizeof(*d));
+    d->render = ctx->render;
+    d->sub_render = ctx->sub_render;
+    obs_queue_task(OBS_TASK_GRAPHICS, destroy_graphics_task, d, false);
   }
 
   bfree(ctx);
@@ -499,8 +514,7 @@ static void adjustment_layer_video_render(void *data, gs_effect_t *effect) {
   if (!ctx->render)
     return;
 
-  obs_scene_t *scene = find_parent_scene_for_source(ctx->source);
-  if (!scene)
+  if (!ctx->cached_scene)
     return;
 
   gs_texrender_reset(ctx->render);
@@ -515,7 +529,7 @@ static void adjustment_layer_video_render(void *data, gs_effect_t *effect) {
     p.ctx = ctx;
     p.found_self = false;
 
-    obs_scene_enum_items(scene, render_enum_callback, &p);
+    obs_scene_enum_items(ctx->cached_scene, render_enum_callback, &p);
 
     gs_texrender_end(ctx->render);
   }
@@ -561,6 +575,8 @@ static void adjustment_layer_video_tick(void *data, float seconds) {
     ctx->width = ovi.base_width;
     ctx->height = ovi.base_height;
   }
+
+  ctx->cached_scene = find_parent_scene_for_source(ctx->source);
 }
 
 struct obs_source_info adjustment_layer_info = {
