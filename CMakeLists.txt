@@ -21,9 +21,21 @@ set(LOCALE_FILES
     data/locale/ko-KR.ini
 )
 
+# Localized warning artwork is loaded as a graphics texture at runtime.  Keep
+# the filenames identical to OBS locale IDs so the C code can select an image
+# without maintaining a second translation table.
+set(WARNING_TEXTURE_FILES
+    data/graphics/warnings/shared-scene/en-US.png
+    data/graphics/warnings/shared-scene/ja-JP.png
+    data/graphics/warnings/shared-scene/zh-TW.png
+    data/graphics/warnings/shared-scene/zh-CN.png
+    data/graphics/warnings/shared-scene/ko-KR.png
+)
+
 add_library(adjustment-layer MODULE
     src/adjustment-layer.c
     ${LOCALE_FILES}
+    ${WARNING_TEXTURE_FILES}
 )
 
 # ------------------------------------------
@@ -110,6 +122,10 @@ if(IS_IN_TREE)
         install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/locale
             DESTINATION "${OBS_DATA_DESTINATION}/obs-plugins/adjustment-layer"
         )
+        install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/graphics
+            DESTINATION "${OBS_DATA_DESTINATION}/obs-plugins/adjustment-layer"
+            PATTERN ".DS_Store" EXCLUDE
+        )
     else()
         message(STATUS "OBS_DATA_DESTINATION not defined; skipping in-tree locale install (OBS packaging/rundir may handle it).")
     endif()
@@ -120,6 +136,9 @@ else()
         # Put locale files into bundle Resources/locale at build time (nice for IDE browsing)
         set_source_files_properties(${LOCALE_FILES} PROPERTIES
             MACOSX_PACKAGE_LOCATION Resources/locale
+        )
+        set_source_files_properties(${WARNING_TEXTURE_FILES} PROPERTIES
+            MACOSX_PACKAGE_LOCATION Resources/graphics/warnings/shared-scene
         )
 
         set_target_properties(adjustment-layer PROPERTIES
@@ -144,6 +163,10 @@ else()
         install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/locale
             DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/dist/adjustment-layer.plugin/Contents/Resources
         )
+        install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/graphics
+            DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/dist/adjustment-layer.plugin/Contents/Resources
+            PATTERN ".DS_Store" EXCLUDE
+        )
 
     elseif(WIN32)
         install(TARGETS adjustment-layer
@@ -153,6 +176,10 @@ else()
 
         install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/locale
             DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/dist/data/obs-plugins/adjustment-layer
+        )
+        install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/graphics
+            DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/dist/data/obs-plugins/adjustment-layer
+            PATTERN ".DS_Store" EXCLUDE
         )
     endif()
 endif()
