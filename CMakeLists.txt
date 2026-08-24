@@ -24,12 +24,27 @@ set(LOCALE_FILES
 # Localized warning artwork is loaded as a graphics texture at runtime.  Keep
 # the filenames identical to OBS locale IDs so the C code can select an image
 # without maintaining a second translation table.
-set(WARNING_TEXTURE_FILES
+set(SHARED_SCENE_WARNING_TEXTURE_FILES
     data/graphics/warnings/shared-scene/en-US.png
     data/graphics/warnings/shared-scene/ja-JP.png
     data/graphics/warnings/shared-scene/zh-TW.png
     data/graphics/warnings/shared-scene/zh-CN.png
     data/graphics/warnings/shared-scene/ko-KR.png
+)
+
+# Group-placement warnings use the same locale IDs and 1080x1080 centered
+# artwork contract as the shared-scene warnings.
+set(GROUP_PLACEMENT_WARNING_TEXTURE_FILES
+    data/graphics/warnings/group-placement/en-US.png
+    data/graphics/warnings/group-placement/ja-JP.png
+    data/graphics/warnings/group-placement/zh-TW.png
+    data/graphics/warnings/group-placement/zh-CN.png
+    data/graphics/warnings/group-placement/ko-KR.png
+)
+
+set(WARNING_TEXTURE_FILES
+    ${SHARED_SCENE_WARNING_TEXTURE_FILES}
+    ${GROUP_PLACEMENT_WARNING_TEXTURE_FILES}
 )
 
 add_library(adjustment-layer MODULE
@@ -137,9 +152,14 @@ else()
         set_source_files_properties(${LOCALE_FILES} PROPERTIES
             MACOSX_PACKAGE_LOCATION Resources/locale
         )
-        set_source_files_properties(${WARNING_TEXTURE_FILES} PROPERTIES
+        set_source_files_properties(${SHARED_SCENE_WARNING_TEXTURE_FILES} PROPERTIES
             MACOSX_PACKAGE_LOCATION Resources/graphics/warnings/shared-scene
         )
+        if(GROUP_PLACEMENT_WARNING_TEXTURE_FILES)
+            set_source_files_properties(${GROUP_PLACEMENT_WARNING_TEXTURE_FILES} PROPERTIES
+                MACOSX_PACKAGE_LOCATION Resources/graphics/warnings/group-placement
+            )
+        endif()
 
         set_target_properties(adjustment-layer PROPERTIES
             BUNDLE TRUE

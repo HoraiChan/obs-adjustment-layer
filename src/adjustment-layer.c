@@ -18,12 +18,23 @@
 /* Data                                                                       */
 /* ------------------------------------------------------------------------- */
 
+enum adjustment_layer_warning {
+  ADJUSTMENT_LAYER_WARNING_SHARED_SCENE,
+  ADJUSTMENT_LAYER_WARNING_GROUP_PLACEMENT,
+  ADJUSTMENT_LAYER_WARNING_COUNT,
+};
+
+struct adjustment_layer_warning_texture {
+  gs_image_file4_t image;
+  bool attempted;
+};
+
 struct adjustment_layer_source {
   obs_source_t *source;
-  /* Bundled localized PNG used only for the shared-scene warning overlay.
-   * This is a graphics texture, not an OBS scene/source item. */
-  gs_image_file4_t warning_image;
-  bool warning_image_attempted;
+  /* Bundled localized PNGs used for warning overlays.  These are graphics
+   * textures, not OBS scene/source items. */
+  struct adjustment_layer_warning_texture
+      warning_textures[ADJUSTMENT_LAYER_WARNING_COUNT];
 
   gs_texrender_t *render;     /* main accumulation */
   gs_texrender_t *sub_render; /* scratch capture */
@@ -35,13 +46,21 @@ struct adjustment_layer_source {
   uint32_t sub_w;
   uint32_t sub_h;
 
-  /* Weak scene source to avoid a parent-scene/source reference cycle. */
-  obs_weak_source_t *cached_scene;
+  /* Weak scene/group source to avoid a parent-container/source reference
+   * cycle.  The container is the immediate scene or group that owns this
+   * adjustment-layer item. */
+  obs_weak_source_t *cached_container;
 
-  /* A source cannot safely be shared by multiple parent scenes because OBS
-   * does not pass the scene item to video_render. */
-  bool ambiguous_scene;
-  bool warned_ambiguous_scene;
+  /* A source cannot safely be shared by multiple parent containers because
+   * OBS does not pass the scene item to video_render. */
+  bool ambiguous_container;
+  bool warned_ambiguous_container;
+
+  /* Adjustment processing is intentionally unsupported in groups.  A group
+   * is transparent and cannot replace items that OBS has already composited,
+   * so alpha-changing filters would expose the original unfiltered image. */
+  bool inside_group;
+  bool warned_group_container;
 
   /* video_render can re-enter through nested scenes or filters. */
   bool rendering;
@@ -168,26 +187,27 @@ static inline bool should_force_sub_render(enum obs_blending_type mode,
 }
 
 /* ------------------------------------------------------------------------- */
-/* Scene discovery. The result owns one scene reference until the caller turns
- * it into a weak source reference. */
+/* Container discovery. The result owns one scene/group reference until the
+ * caller turns it into a weak source reference. */
 /* ------------------------------------------------------------------------- */
 
-struct find_scene_data {
+struct find_container_data {
   obs_source_t *target;
-  obs_scene_t *found_scene;
-  bool multiple_scenes;
+  obs_scene_t *found_container;
+  bool ambiguous;
 };
 
-static bool check_scene_item(obs_scene_t *scene, obs_sceneitem_t *item,
-                             void *param);
+static bool check_container_item(obs_scene_t *container,
+                                 obs_sceneitem_t *item, void *param);
 
-static bool find_source_in_scene(void *param, obs_source_t *scene_source) {
-  struct find_scene_data *d = param;
-  obs_scene_t *scene = obs_scene_from_source(scene_source);
-  if (!scene)
+static bool find_source_in_container(void *param,
+                                     obs_source_t *container_source) {
+  struct find_container_data *d = param;
+  obs_scene_t *container = obs_group_or_scene_from_source(container_source);
+  if (!container)
     return true;
 
-  obs_scene_enum_items(scene, check_scene_item, d);
+  obs_scene_enum_items(container, check_container_item, d);
   return true;
 }
 
@@ -204,39 +224,41 @@ static bool collect_scene_ref(void *param, obs_source_t *scene_source) {
   return true;
 }
 
-static void record_found_scene(struct find_scene_data *d, obs_scene_t *scene) {
-  if (!scene)
+static void record_found_container(struct find_container_data *d,
+                                   obs_scene_t *container) {
+  if (!container)
     return;
 
-  if (!d->found_scene) {
-    d->found_scene = obs_scene_get_ref(scene);
-  } else if (d->found_scene != scene) {
-    d->multiple_scenes = true;
-  }
+  if (!d->found_container)
+    d->found_container = obs_scene_get_ref(container);
+  else
+    /* Even two occurrences in the same group are ambiguous: video_render
+     * receives the source, but not the scene item instance that invoked it. */
+    d->ambiguous = true;
 }
 
-static bool check_scene_item(obs_scene_t *scene, obs_sceneitem_t *item,
-                             void *param) {
-  struct find_scene_data *d = param;
+static bool check_container_item(obs_scene_t *container, obs_sceneitem_t *item,
+                                 void *param) {
+  struct find_container_data *d = param;
   obs_source_t *src = obs_sceneitem_get_source(item);
 
   if (src == d->target) {
-    record_found_scene(d, scene);
+    record_found_container(d, container);
     return true;
   }
 
   /* Recurse into both scenes and groups. */
-  obs_scene_t *child_scene = obs_group_or_scene_from_source(src);
-  if (child_scene && child_scene != scene)
-    obs_scene_enum_items(child_scene, check_scene_item, d);
+  obs_scene_t *child_container = obs_group_or_scene_from_source(src);
+  if (child_container && child_container != container)
+    obs_scene_enum_items(child_container, check_container_item, d);
 
   return true;
 }
 
-static obs_scene_t *find_parent_scene_for_source(obs_source_t *target,
-                                                 bool *multiple_scenes) {
+static obs_scene_t *find_parent_container_for_source(obs_source_t *target,
+                                                      bool *ambiguous) {
   DARRAY(obs_scene_t *) scenes;
-  struct find_scene_data d = {0};
+  struct find_container_data d = {0};
 
   da_init(scenes);
 
@@ -245,20 +267,20 @@ static obs_scene_t *find_parent_scene_for_source(obs_source_t *target,
   obs_enum_scenes(collect_scene_ref, &scenes);
 
   d.target = target;
-  d.found_scene = NULL;
-  d.multiple_scenes = false;
+  d.found_container = NULL;
+  d.ambiguous = false;
 
   for (size_t i = 0; i < scenes.num; i++) {
-    find_source_in_scene(&d, obs_scene_get_source(scenes.array[i]));
+    find_source_in_container(&d, obs_scene_get_source(scenes.array[i]));
     obs_scene_release(scenes.array[i]);
   }
 
   da_free(scenes);
 
-  if (multiple_scenes)
-    *multiple_scenes = d.multiple_scenes;
+  if (ambiguous)
+    *ambiguous = d.ambiguous;
 
-  return d.found_scene;
+  return d.found_container;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -538,7 +560,7 @@ static void release_render_params(struct render_params *p) {
 }
 
 /* ------------------------------------------------------------------------- */
-/* Shared-scene warning overlay                                               */
+/* Warning overlays                                                          */
 /* ------------------------------------------------------------------------- */
 
 static const char *warning_texture_locale(void) {
@@ -557,14 +579,29 @@ static const char *warning_texture_locale(void) {
   return "en-US";
 }
 
-static bool load_warning_texture_file(struct adjustment_layer_source *ctx,
-                                      const char *locale) {
-  if (!ctx || !locale)
+static const char *warning_texture_directory(
+    enum adjustment_layer_warning warning) {
+  switch (warning) {
+  case ADJUSTMENT_LAYER_WARNING_SHARED_SCENE:
+    return "shared-scene";
+  case ADJUSTMENT_LAYER_WARNING_GROUP_PLACEMENT:
+    return "group-placement";
+  case ADJUSTMENT_LAYER_WARNING_COUNT:
+    break;
+  }
+
+  return NULL;
+}
+
+static bool load_warning_texture_file(
+    struct adjustment_layer_warning_texture *warning_texture,
+    const char *directory, const char *locale) {
+  if (!warning_texture || !directory || !locale)
     return false;
 
   char relative_path[128];
   int written = snprintf(relative_path, sizeof(relative_path),
-                         "graphics/warnings/shared-scene/%s.png", locale);
+                         "graphics/warnings/%s/%s.png", directory, locale);
   if (written < 0 || (size_t)written >= sizeof(relative_path))
     return false;
 
@@ -575,61 +612,93 @@ static bool load_warning_texture_file(struct adjustment_layer_source *ctx,
   /* Decode the PNG and premultiply alpha before creating the GPU texture.
    * The call is made from video_render, where the OBS graphics context is
    * current; gs_image_file4_free is likewise called on that context. */
-  gs_image_file4_init(&ctx->warning_image, path,
+  gs_image_file4_init(&warning_texture->image, path,
                       GS_IMAGE_ALPHA_PREMULTIPLY_SRGB);
   bfree(path);
 
-  if (!ctx->warning_image.image3.image2.image.loaded)
+  if (!warning_texture->image.image3.image2.image.loaded)
     return false;
 
-  gs_image_file4_init_texture(&ctx->warning_image);
-  if (!ctx->warning_image.image3.image2.image.texture) {
-    gs_image_file4_free(&ctx->warning_image);
+  gs_image_file4_init_texture(&warning_texture->image);
+  if (!warning_texture->image.image3.image2.image.texture) {
+    gs_image_file4_free(&warning_texture->image);
     return false;
   }
 
   return true;
 }
 
-static bool ensure_warning_texture(struct adjustment_layer_source *ctx) {
-  if (!ctx)
+static bool ensure_warning_texture(
+    struct adjustment_layer_source *ctx,
+    enum adjustment_layer_warning warning) {
+  if (!ctx || warning >= ADJUSTMENT_LAYER_WARNING_COUNT)
     return false;
 
-  if (ctx->warning_image_attempted)
-    return ctx->warning_image.image3.image2.image.texture != NULL;
+  struct adjustment_layer_warning_texture *warning_texture =
+      &ctx->warning_textures[warning];
+  if (warning_texture->attempted)
+    return warning_texture->image.image3.image2.image.texture != NULL;
 
-  ctx->warning_image_attempted = true;
+  warning_texture->attempted = true;
 
   const char *locale = warning_texture_locale();
-  if (load_warning_texture_file(ctx, locale))
+  const char *directory = warning_texture_directory(warning);
+  if (load_warning_texture_file(warning_texture, directory, locale))
     return true;
 
   /* If a localized asset is missing from a package, keep the warning useful
    * by trying the guaranteed English asset once. */
   if (strcmp(locale, "en-US") != 0) {
-    gs_image_file4_free(&ctx->warning_image);
-    if (load_warning_texture_file(ctx, "en-US")) {
+    gs_image_file4_free(&warning_texture->image);
+    if (load_warning_texture_file(warning_texture, directory, "en-US")) {
       blog(LOG_WARNING,
-           "[adjustment-layer] warning texture for locale '%s' was not "
+           "[adjustment-layer] %s warning texture for locale '%s' was not "
            "available; using en-US",
-           locale);
+           directory, locale);
       return true;
     }
   }
 
+  /* group-placement artwork is supplied independently from the plugin code.
+   * Until it is packaged, use the existing localized warning instead of
+   * silently rendering an empty source. */
+  if (warning == ADJUSTMENT_LAYER_WARNING_GROUP_PLACEMENT) {
+    gs_image_file4_free(&warning_texture->image);
+    if (load_warning_texture_file(warning_texture, "shared-scene", locale)) {
+      blog(LOG_WARNING,
+           "[adjustment-layer] group-placement warning artwork is not "
+           "available; using the shared-scene warning artwork temporarily");
+      return true;
+    }
+
+    if (strcmp(locale, "en-US") != 0) {
+      gs_image_file4_free(&warning_texture->image);
+      if (load_warning_texture_file(warning_texture, "shared-scene",
+                                    "en-US")) {
+        blog(LOG_WARNING,
+             "[adjustment-layer] group-placement warning artwork is not "
+             "available; using the en-US shared-scene warning artwork "
+             "temporarily");
+        return true;
+      }
+    }
+  }
+
   blog(LOG_WARNING,
-       "[adjustment-layer] failed to load the shared-scene warning texture "
-       "for locale '%s'",
-       locale);
+       "[adjustment-layer] failed to load the %s warning texture for locale "
+       "'%s'",
+       directory, locale);
   return false;
 }
 
-static void draw_shared_scene_warning(struct adjustment_layer_source *ctx) {
+static void draw_warning(struct adjustment_layer_source *ctx,
+                         enum adjustment_layer_warning warning) {
   if (!ctx || ctx->width == 0 || ctx->height == 0 ||
-      !ensure_warning_texture(ctx))
+      !ensure_warning_texture(ctx, warning))
     return;
 
-  const struct gs_image_file *image = &ctx->warning_image.image3.image2.image;
+  const struct gs_image_file *image =
+      &ctx->warning_textures[warning].image.image3.image2.image;
   gs_texture_t *texture = image->texture;
   const uint32_t image_width = image->cx;
   const uint32_t image_height = image->cy;
@@ -715,7 +784,11 @@ static void adjustment_layer_destroy(void *data) {
   if (!ctx)
     return;
 
-  if (ctx->render || ctx->sub_render || ctx->warning_image_attempted) {
+  bool has_warning_resource = false;
+  for (size_t i = 0; i < ADJUSTMENT_LAYER_WARNING_COUNT; i++)
+    has_warning_resource |= ctx->warning_textures[i].attempted;
+
+  if (ctx->render || ctx->sub_render || has_warning_resource) {
     /* Source destruction already runs on OBS's destruction thread.  Acquire
      * the graphics context here so the resources cannot outlive this module
      * or a stopped graphics thread. */
@@ -724,12 +797,13 @@ static void adjustment_layer_destroy(void *data) {
       gs_texrender_destroy(ctx->render);
     if (ctx->sub_render)
       gs_texrender_destroy(ctx->sub_render);
-    gs_image_file4_free(&ctx->warning_image);
+    for (size_t i = 0; i < ADJUSTMENT_LAYER_WARNING_COUNT; i++)
+      gs_image_file4_free(&ctx->warning_textures[i].image);
     obs_leave_graphics();
   }
 
-  if (ctx->cached_scene)
-    obs_weak_source_release(ctx->cached_scene);
+  if (ctx->cached_container)
+    obs_weak_source_release(ctx->cached_container);
 
   bfree(ctx);
 }
@@ -807,15 +881,23 @@ static void adjustment_layer_video_render(void *data, gs_effect_t *effect) {
   if (!ctx)
     return;
 
-  if (ctx->ambiguous_scene) {
+  if (ctx->ambiguous_container) {
     /* Shared placement cannot be rendered correctly because OBS does not
-     * identify the parent scene here.  Show the actionable warning instead of
-     * silently returning a transparent frame. */
-    draw_shared_scene_warning(ctx);
+     * identify the parent scene/group item here.  Show the actionable warning
+     * instead of silently returning a transparent frame. */
+    draw_warning(ctx, ADJUSTMENT_LAYER_WARNING_SHARED_SCENE);
     return;
   }
 
-  if (!ctx->cached_scene)
+  if (ctx->inside_group) {
+    /* A transparent group cannot safely use the overlay-based adjustment
+     * technique: alpha-reducing filters reveal the already-rendered original
+     * items.  Stop before enumerating or rendering any child source. */
+    draw_warning(ctx, ADJUSTMENT_LAYER_WARNING_GROUP_PLACEMENT);
+    return;
+  }
+
+  if (!ctx->cached_container)
     return;
 
   /* The layer renders child scenes/sources manually.  Refuse re-entry rather
@@ -823,20 +905,25 @@ static void adjustment_layer_video_render(void *data, gs_effect_t *effect) {
   if (ctx->rendering)
     return;
 
-  obs_source_t *cached_scene_source =
-      obs_weak_source_get_source(ctx->cached_scene);
-  if (!cached_scene_source)
+  obs_source_t *cached_container_source =
+      obs_weak_source_get_source(ctx->cached_container);
+  if (!cached_container_source)
     return;
 
-  obs_scene_t *cached_scene = obs_scene_from_source(cached_scene_source);
-  if (!cached_scene) {
-    obs_source_release(cached_scene_source);
+  /* Resolve the cached owner after acquiring a temporary strong reference.
+   * Groups have already been rejected above, but the combined helper keeps
+   * this lifetime-sensitive conversion valid if the placement changes near a
+   * video tick boundary. */
+  obs_scene_t *cached_container =
+      obs_group_or_scene_from_source(cached_container_source);
+  if (!cached_container) {
+    obs_source_release(cached_container_source);
     return;
   }
 
   const uint64_t frame_time = obs_get_video_frame_time();
   if (ctx->has_rendered_frame && ctx->rendered_frame_time == frame_time) {
-    obs_source_release(cached_scene_source);
+    obs_source_release(cached_container_source);
     draw_layer_texture(ctx);
     return;
   }
@@ -849,8 +936,8 @@ static void adjustment_layer_video_render(void *data, gs_effect_t *effect) {
 
   /* Only snapshot item/source state while the scene mutexes are held.  The
    * actual source and Lua-filter rendering happens after this call returns. */
-  obs_scene_enum_items(cached_scene, collect_render_item, &p);
-  obs_source_release(cached_scene_source);
+  obs_scene_enum_items(cached_container, collect_render_item, &p);
+  obs_source_release(cached_container_source);
 
   if (!p.found_self) {
     release_render_params(&p);
@@ -903,55 +990,76 @@ static void adjustment_layer_video_tick(void *data, float seconds) {
     ctx->height = ovi.base_height;
   }
 
-  bool multiple_scenes = false;
-  obs_scene_t *new_scene =
-      find_parent_scene_for_source(ctx->source, &multiple_scenes);
-  obs_weak_source_t *new_cached_scene = NULL;
+  bool ambiguous_container = false;
+  bool inside_group = false;
+  obs_scene_t *new_container =
+      find_parent_container_for_source(ctx->source, &ambiguous_container);
+  obs_weak_source_t *new_cached_container = NULL;
 
-  if (multiple_scenes) {
-    if (!ctx->warned_ambiguous_scene) {
+  if (ambiguous_container) {
+    ctx->warned_group_container = false;
+
+    if (!ctx->warned_ambiguous_container) {
       blog(LOG_WARNING,
-           "[adjustment-layer] source '%s' is used in multiple scenes; "
-           "adjustment processing is disabled for safety. Create a separate "
-           "Adjustment Layer source for each scene",
+           "[adjustment-layer] source '%s' is used by multiple scene/group "
+           "items; adjustment processing is disabled for safety. Create a "
+           "separate Adjustment Layer source for each container",
            obs_source_get_name(ctx->source));
-      ctx->warned_ambiguous_scene = true;
+      ctx->warned_ambiguous_container = true;
     }
 
-    if (new_scene)
-      obs_scene_release(new_scene);
-    new_scene = NULL;
+    if (new_container)
+      obs_scene_release(new_container);
+    new_container = NULL;
   } else {
-    ctx->warned_ambiguous_scene = false;
+    ctx->warned_ambiguous_container = false;
 
-    if (new_scene) {
+    if (new_container) {
+      inside_group = obs_scene_is_group(new_container);
+
+      if (inside_group) {
+        if (!ctx->warned_group_container) {
+          blog(LOG_WARNING,
+               "[adjustment-layer] source '%s' is inside a group; adjustment "
+               "processing is disabled. Move the Adjustment Layer directly "
+               "under a scene",
+               obs_source_get_name(ctx->source));
+          ctx->warned_group_container = true;
+        }
+      } else {
+        ctx->warned_group_container = false;
+      }
+
       /* Scene-item setters can emit signals and update transforms.  Do this
-       * during video_tick, never from video_render while scene rendering holds
-       * the parent scene's video mutex. */
+       * during video_tick, never from video_render while the parent
+       * scene/group's video mutex is held. */
       struct find_item_params item_params = {
           .target = ctx->source,
           .item = NULL,
       };
-      obs_scene_enum_items(new_scene, find_target_item, &item_params);
+      obs_scene_enum_items(new_container, find_target_item, &item_params);
 
-      obs_source_t *scene_source = obs_scene_get_source(new_scene);
-      if (scene_source)
-        new_cached_scene = obs_source_get_weak_source(scene_source);
-      obs_scene_release(new_scene);
-      new_scene = NULL;
+      obs_source_t *container_source = obs_scene_get_source(new_container);
+      if (container_source)
+        new_cached_container = obs_source_get_weak_source(container_source);
+      obs_scene_release(new_container);
+      new_container = NULL;
 
       if (item_params.item) {
         enforce_item_state(item_params.item);
         obs_sceneitem_release(item_params.item);
       }
+    } else {
+      ctx->warned_group_container = false;
     }
   }
 
-  obs_weak_source_t *old_scene = ctx->cached_scene;
-  ctx->cached_scene = new_cached_scene;
-  ctx->ambiguous_scene = multiple_scenes;
-  if (old_scene)
-    obs_weak_source_release(old_scene);
+  obs_weak_source_t *old_container = ctx->cached_container;
+  ctx->cached_container = new_cached_container;
+  ctx->ambiguous_container = ambiguous_container;
+  ctx->inside_group = inside_group;
+  if (old_container)
+    obs_weak_source_release(old_container);
 }
 
 struct obs_source_info adjustment_layer_info = {
