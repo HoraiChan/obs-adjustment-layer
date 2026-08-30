@@ -75,7 +75,7 @@ This method is mainly intended for **development and debugging**.
 
 <small>
 OBS Studio のソースツリーに組み込んでビルドする方法です。  
-**主に開発・デバッグ用途**を想定しています。
+主に開発・デバッグ用途を想定しています。
 </small>
 
 1. Place this repository into:
