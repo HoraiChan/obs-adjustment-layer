@@ -285,7 +285,8 @@ static obs_scene_t *find_parent_container_for_source(obs_source_t *target,
 
 /* ------------------------------------------------------------------------- */
 /* Render helpers */
-/*   - transitions: NOT supported (instant switch) */
+/*   - scene-item show/hide transitions are rendered by their OBS transition
+ *     sources; this plugin never starts or advances them itself */
 /*   - graphics resources are destroyed on the OBS graphics context */
 /* ------------------------------------------------------------------------- */
 
@@ -298,6 +299,9 @@ static inline bool is_zero_crop(const struct obs_sceneitem_crop *c) {
  * called while obs_scene_enum_items holds scene mutexes. */
 struct adjustment_layer_item {
   obs_source_t *source;
+  /* Strong reference to the currently running show/hide transition, or NULL
+   * during normal visible/hidden states. */
+  obs_source_t *transition;
   struct matrix4 transform;
   struct obs_sceneitem_crop crop;
   bool visible;
@@ -448,13 +452,8 @@ static void composite_texture_with_item(struct adjustment_layer_source *ctx,
 
 /* Direct render path (ONLY safe for NORMAL + zero-crop) */
 static void render_item_direct_normal_nocrop(
-    const struct adjustment_layer_item *item) {
-  if (!item || !item->source)
-    return;
-
-  uint32_t sw = obs_source_get_width(item->source);
-  uint32_t sh = obs_source_get_height(item->source);
-  if (sw == 0 || sh == 0)
+    const struct adjustment_layer_item *item, obs_source_t *render_source) {
+  if (!item || !render_source)
     return;
 
   gs_matrix_push();
@@ -470,7 +469,7 @@ static void render_item_direct_normal_nocrop(
                              GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
   gs_blend_op(GS_BLEND_OP_ADD);
 
-  obs_source_video_render(item->source);
+  obs_source_video_render(render_source);
 
   gs_set_linear_srgb(prev_linear);
   restore_item_srgb_state(prev_srgb);
@@ -484,25 +483,38 @@ static void render_item(struct adjustment_layer_source *ctx,
   if (!ctx || !item || !item->source)
     return;
 
-  if (!item->visible)
-    return;
+  /* OBS renders the transition source instead of the item source while a
+   * show/hide transition is running.  A hidden item remains renderable only
+   * for the lifetime of its hide transition. */
+  obs_source_t *render_source = item->transition;
+  if (!render_source) {
+    if (!item->visible)
+      return;
+    render_source = item->source;
+  }
 
   uint32_t sw = obs_source_get_width(item->source);
   uint32_t sh = obs_source_get_height(item->source);
   if (sw == 0 || sh == 0)
     return;
 
+  /* Match libobs scene rendering.  The transition owns its timing and child
+   * sources; the adjustment layer only supplies the current item dimensions
+   * before asking OBS to render it. */
+  if (item->transition)
+    obs_transition_set_size(item->transition, sw, sh);
+
   bool force_sub = should_force_sub_render(item->blend_type,
                                            item->blend_method);
 
   /* Fast path: NORMAL + no crop -> direct render */
   if (!force_sub && is_zero_crop(&item->crop)) {
-    render_item_direct_normal_nocrop(item);
+    render_item_direct_normal_nocrop(item, render_source);
     return;
   }
 
   /* Otherwise: capture then composite (stable for non-NORMAL and/or crop) */
-  gs_texture_t *sub_tex = capture_source_to_sub(ctx, item->source, sw, sh);
+  gs_texture_t *sub_tex = capture_source_to_sub(ctx, render_source, sw, sh);
   if (!sub_tex)
     return;
 
@@ -519,6 +531,29 @@ struct render_params {
   bool found_self;
   DARRAY(struct adjustment_layer_item) items;
 };
+
+/* Scene-item transitions are private OBS sources.  Public libobs does not
+ * expose its internal transitioning_video flag, so identify the active phase
+ * from the expected endpoint plus OBS's video clock.  Scene-item transitions
+ * always use automatic timing. */
+static obs_source_t *get_active_item_transition(obs_sceneitem_t *item,
+                                                bool visible) {
+  obs_source_t *transition = obs_sceneitem_get_transition(item, visible);
+  if (!transition)
+    return NULL;
+
+  const enum obs_transition_target endpoint =
+      visible ? OBS_TRANSITION_SOURCE_B : OBS_TRANSITION_SOURCE_A;
+  obs_source_t *child = obs_transition_get_source(transition, endpoint);
+  if (!child)
+    return NULL;
+  obs_source_release(child);
+
+  if (obs_transition_get_time(transition) >= 1.0f)
+    return NULL;
+
+  return obs_source_get_ref(transition);
+}
 
 static bool collect_render_item(obs_scene_t *scene, obs_sceneitem_t *item,
                                 void *param) {
@@ -542,6 +577,8 @@ static bool collect_render_item(obs_scene_t *scene, obs_sceneitem_t *item,
       return true;
 
     snapshot.visible = obs_sceneitem_visible(item);
+    snapshot.transition =
+        get_active_item_transition(item, snapshot.visible);
     snapshot.blend_method = obs_sceneitem_get_blending_method(item);
     snapshot.blend_type = obs_sceneitem_get_blending_mode(item);
     obs_sceneitem_get_crop(item, &snapshot.crop);
@@ -553,8 +590,11 @@ static bool collect_render_item(obs_scene_t *scene, obs_sceneitem_t *item,
 }
 
 static void release_render_params(struct render_params *p) {
-  for (size_t i = 0; i < p->items.num; i++)
+  for (size_t i = 0; i < p->items.num; i++) {
+    if (p->items.array[i].transition)
+      obs_source_release(p->items.array[i].transition);
     obs_source_release(p->items.array[i].source);
+  }
 
   da_free(p->items);
 }
