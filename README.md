@@ -99,13 +99,6 @@ OBS Studio のソースツリーに組み込んでビルドする方法です。
 
 ---
 
-## Notes / 注意事項
-
-- Per-source show/hide transitions are currently not supported.  
-  <small>ソース単体の表示・非表示トランジション機能には現在対応していません。</small>
-
----
-
 ## License / ライセンス
 
 - BSD 2-Clause License
