@@ -75,7 +75,7 @@ This method is mainly intended for **development and debugging**.
 
 <small>
 OBS Studio のソースツリーに組み込んでビルドする方法です。  
-**主に開発・デバッグ用途**を想定しています。
+主に開発・デバッグ用途を想定しています。
 </small>
 
 1. Place this repository into:
@@ -96,13 +96,6 @@ OBS Studio のソースツリーに組み込んでビルドする方法です。
 > macOS では、一部の OBS プラグインが依存している旧 OpenGL / AGL の影響により、  
 > in-tree ビルドが失敗する場合があります。  
 > その場合は **Out-of-tree ビルド** を利用してください。
-
----
-
-## Notes / 注意事項
-
-- Per-source show/hide transitions are currently not supported.  
-  <small>ソース単体の表示・非表示トランジション機能には現在対応していません。</small>
 
 ---
 
