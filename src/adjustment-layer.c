@@ -194,11 +194,39 @@ static inline bool should_force_sub_render(enum obs_blending_type mode,
 struct find_container_data {
   obs_source_t *target;
   obs_scene_t *found_container;
+  obs_sceneitem_t *found_item;
+  DARRAY(obs_scene_t *) visited_containers;
   bool ambiguous;
 };
 
 static bool check_container_item(obs_scene_t *container,
                                  obs_sceneitem_t *item, void *param);
+
+/* A public scene can also be reached recursively through another scene.
+ * Retain every visited scene/group so pointer identity remains valid for the
+ * entire traversal and each container is enumerated exactly once. */
+static bool mark_container_visited(struct find_container_data *d,
+                                   obs_scene_t *container) {
+  for (size_t i = 0; i < d->visited_containers.num; i++) {
+    if (d->visited_containers.array[i] == container)
+      return false;
+  }
+
+  obs_scene_t *container_ref = obs_scene_get_ref(container);
+  if (!container_ref)
+    return false;
+
+  da_push_back(d->visited_containers, &container_ref);
+  return true;
+}
+
+static void scan_container(struct find_container_data *d,
+                           obs_scene_t *container) {
+  if (!container || !mark_container_visited(d, container))
+    return;
+
+  obs_scene_enum_items(container, check_container_item, d);
+}
 
 static bool find_source_in_container(void *param,
                                      obs_source_t *container_source) {
@@ -207,7 +235,7 @@ static bool find_source_in_container(void *param,
   if (!container)
     return true;
 
-  obs_scene_enum_items(container, check_container_item, d);
+  scan_container(d, container);
   return true;
 }
 
@@ -225,16 +253,24 @@ static bool collect_scene_ref(void *param, obs_source_t *scene_source) {
 }
 
 static void record_found_container(struct find_container_data *d,
-                                   obs_scene_t *container) {
-  if (!container)
+                                   obs_scene_t *container,
+                                   obs_sceneitem_t *item) {
+  if (!container || !item)
     return;
 
-  if (!d->found_container)
+  if (!d->found_item) {
     d->found_container = obs_scene_get_ref(container);
-  else
-    /* Even two occurrences in the same group are ambiguous: video_render
-     * receives the source, but not the scene item instance that invoked it. */
+    if (!d->found_container)
+      return;
+
+    d->found_item = item;
+    obs_sceneitem_addref(d->found_item);
+  } else if (d->found_item != item) {
+    /* Distinct scene items are genuinely ambiguous: video_render receives the
+     * source, but not the scene item instance that invoked it.  Encountering
+     * the same item again through a nested-scene path is not a duplicate. */
     d->ambiguous = true;
+  }
 }
 
 static bool check_container_item(obs_scene_t *container, obs_sceneitem_t *item,
@@ -243,14 +279,14 @@ static bool check_container_item(obs_scene_t *container, obs_sceneitem_t *item,
   obs_source_t *src = obs_sceneitem_get_source(item);
 
   if (src == d->target) {
-    record_found_container(d, container);
+    record_found_container(d, container, item);
     return true;
   }
 
   /* Recurse into both scenes and groups. */
   obs_scene_t *child_container = obs_group_or_scene_from_source(src);
   if (child_container && child_container != container)
-    obs_scene_enum_items(child_container, check_container_item, d);
+    scan_container(d, child_container);
 
   return true;
 }
@@ -268,6 +304,8 @@ static obs_scene_t *find_parent_container_for_source(obs_source_t *target,
 
   d.target = target;
   d.found_container = NULL;
+  d.found_item = NULL;
+  da_init(d.visited_containers);
   d.ambiguous = false;
 
   for (size_t i = 0; i < scenes.num; i++) {
@@ -276,6 +314,13 @@ static obs_scene_t *find_parent_container_for_source(obs_source_t *target,
   }
 
   da_free(scenes);
+
+  if (d.found_item)
+    obs_sceneitem_release(d.found_item);
+
+  for (size_t i = 0; i < d.visited_containers.num; i++)
+    obs_scene_release(d.visited_containers.array[i]);
+  da_free(d.visited_containers);
 
   if (ambiguous)
     *ambiguous = d.ambiguous;
