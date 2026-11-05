@@ -1,5 +1,4 @@
 #include <graphics/graphics.h>
-#include <graphics/image-file.h>
 #include <graphics/matrix4.h>
 #include <graphics/vec2.h>
 #include <obs-module.h>
@@ -25,7 +24,9 @@ enum adjustment_layer_warning {
 };
 
 struct adjustment_layer_warning_texture {
-  gs_image_file4_t image;
+  gs_texture_t *texture;
+  uint32_t width;
+  uint32_t height;
   bool attempted;
 };
 
@@ -678,6 +679,18 @@ static const char *warning_texture_directory(
   return NULL;
 }
 
+static void clear_warning_texture(
+    struct adjustment_layer_warning_texture *warning_texture) {
+  if (!warning_texture)
+    return;
+
+  if (warning_texture->texture)
+    gs_texture_destroy(warning_texture->texture);
+  warning_texture->texture = NULL;
+  warning_texture->width = 0;
+  warning_texture->height = 0;
+}
+
 static bool load_warning_texture_file(
     struct adjustment_layer_warning_texture *warning_texture,
     const char *directory, const char *locale) {
@@ -695,20 +708,32 @@ static bool load_warning_texture_file(
     return false;
 
   /* Decode the PNG and premultiply alpha before creating the GPU texture.
-   * The call is made from video_render, where the OBS graphics context is
-   * current; gs_image_file4_free is likewise called on that context. */
-  gs_image_file4_init(&warning_texture->image, path,
-                      GS_IMAGE_ALPHA_PREMULTIPLY_SRGB);
+   * This runs from video_render, where the OBS graphics context is current. */
+  enum gs_color_format format;
+  enum gs_color_space space;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint8_t *pixels = gs_create_texture_file_data3(
+      path, GS_IMAGE_ALPHA_PREMULTIPLY_SRGB, &format, &width, &height, &space);
   bfree(path);
 
-  if (!warning_texture->image.image3.image2.image.loaded)
+  if (!pixels)
     return false;
 
-  gs_image_file4_init_texture(&warning_texture->image);
-  if (!warning_texture->image.image3.image2.image.texture) {
-    gs_image_file4_free(&warning_texture->image);
+  UNUSED_PARAMETER(space);
+  if (width == 0 || height == 0) {
+    bfree(pixels);
     return false;
   }
+
+  warning_texture->texture =
+      gs_texture_create(width, height, format, 1, (const uint8_t **)&pixels, 0);
+  bfree(pixels);
+  if (!warning_texture->texture)
+    return false;
+
+  warning_texture->width = width;
+  warning_texture->height = height;
 
   return true;
 }
@@ -722,7 +747,7 @@ static bool ensure_warning_texture(
   struct adjustment_layer_warning_texture *warning_texture =
       &ctx->warning_textures[warning];
   if (warning_texture->attempted)
-    return warning_texture->image.image3.image2.image.texture != NULL;
+    return warning_texture->texture != NULL;
 
   warning_texture->attempted = true;
 
@@ -734,7 +759,7 @@ static bool ensure_warning_texture(
   /* If a localized asset is missing from a package, keep the warning useful
    * by trying the guaranteed English asset once. */
   if (strcmp(locale, "en-US") != 0) {
-    gs_image_file4_free(&warning_texture->image);
+    clear_warning_texture(warning_texture);
     if (load_warning_texture_file(warning_texture, directory, "en-US")) {
       blog(LOG_WARNING,
            "[adjustment-layer] %s warning texture for locale '%s' was not "
@@ -748,7 +773,7 @@ static bool ensure_warning_texture(
    * Until it is packaged, use the existing localized warning instead of
    * silently rendering an empty source. */
   if (warning == ADJUSTMENT_LAYER_WARNING_GROUP_PLACEMENT) {
-    gs_image_file4_free(&warning_texture->image);
+    clear_warning_texture(warning_texture);
     if (load_warning_texture_file(warning_texture, "shared-scene", locale)) {
       blog(LOG_WARNING,
            "[adjustment-layer] group-placement warning artwork is not "
@@ -757,7 +782,7 @@ static bool ensure_warning_texture(
     }
 
     if (strcmp(locale, "en-US") != 0) {
-      gs_image_file4_free(&warning_texture->image);
+      clear_warning_texture(warning_texture);
       if (load_warning_texture_file(warning_texture, "shared-scene",
                                     "en-US")) {
         blog(LOG_WARNING,
@@ -782,11 +807,11 @@ static void draw_warning(struct adjustment_layer_source *ctx,
       !ensure_warning_texture(ctx, warning))
     return;
 
-  const struct gs_image_file *image =
-      &ctx->warning_textures[warning].image.image3.image2.image;
+  const struct adjustment_layer_warning_texture *image =
+      &ctx->warning_textures[warning];
   gs_texture_t *texture = image->texture;
-  const uint32_t image_width = image->cx;
-  const uint32_t image_height = image->cy;
+  const uint32_t image_width = image->width;
+  const uint32_t image_height = image->height;
   if (!texture || image_width == 0 || image_height == 0)
     return;
 
@@ -883,7 +908,7 @@ static void adjustment_layer_destroy(void *data) {
     if (ctx->sub_render)
       gs_texrender_destroy(ctx->sub_render);
     for (size_t i = 0; i < ADJUSTMENT_LAYER_WARNING_COUNT; i++)
-      gs_image_file4_free(&ctx->warning_textures[i].image);
+      clear_warning_texture(&ctx->warning_textures[i]);
     obs_leave_graphics();
   }
 

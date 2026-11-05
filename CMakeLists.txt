@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.10)
 
 # ==========================================
 # Plugin Version Configuration
-set(PLUGIN_VERSION "1.1.1")
+set(PLUGIN_VERSION "1.1.2")
 # ==========================================
 
 project(adjustment-layer VERSION ${PLUGIN_VERSION} LANGUAGES C CXX)
@@ -84,6 +84,7 @@ if(NOT IS_IN_TREE)
         if(DEFINED LIBOBS_CONFIG_DIR)
             message(STATUS "Using manual LibObs config dir: ${LIBOBS_CONFIG_DIR}")
             target_include_directories(adjustment-layer PRIVATE ${LIBOBS_CONFIG_DIR})
+            target_compile_definitions(adjustment-layer PRIVATE HAVE_OBSCONFIG_H)
         endif()
 
         if(NOT DEFINED LIBOBS_LIB)
@@ -165,10 +166,11 @@ else()
             BUNDLE TRUE
             BUNDLE_EXTENSION "plugin"
             MACOSX_BUNDLE_GUI_IDENTIFIER "jp.horaiken.adjustment-layer"
+            MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/cmake/macos/Info.plist.in"
             MACOSX_BUNDLE_BUNDLE_NAME "adjustment-layer"
             MACOSX_BUNDLE_INFO_STRING "adjustment-layer plugin"
             MACOSX_BUNDLE_SHORT_VERSION_STRING "${PLUGIN_VERSION}"
-            MACOSX_BUNDLE_BUNDLE_VERSION "1"
+            MACOSX_BUNDLE_BUNDLE_VERSION "${PLUGIN_VERSION}"
             MACOSX_BUNDLE_COPYRIGHT "Copyright 2026"
             MACOSX_BUNDLE_PACKAGE_TYPE "BNDL"
             BUILD_WITH_INSTALL_RPATH TRUE
@@ -190,15 +192,22 @@ else()
 
     elseif(WIN32)
         install(TARGETS adjustment-layer
-            RUNTIME DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/dist/obs-plugins/64bit
-            LIBRARY DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/dist/obs-plugins/64bit
+            RUNTIME DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/dist/plugins/adjustment-layer
+            LIBRARY DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/dist/plugins/adjustment-layer
+        )
+
+        # OBS 31+ supports the per-plugin bin/64bit layout, while OBS 33+
+        # supports the direct DLL layout. Ship one identical binary at both
+        # paths so this package can target both loader generations.
+        install(FILES $<TARGET_FILE:adjustment-layer>
+            DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/dist/plugins/adjustment-layer/bin/64bit
         )
 
         install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/locale
-            DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/dist/data/obs-plugins/adjustment-layer
+            DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/dist/plugins/adjustment-layer/data
         )
         install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/graphics
-            DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/dist/data/obs-plugins/adjustment-layer
+            DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/dist/plugins/adjustment-layer/data
             PATTERN ".DS_Store" EXCLUDE
         )
     endif()
