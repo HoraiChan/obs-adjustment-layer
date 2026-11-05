@@ -25,6 +25,14 @@ OBS Studioに「このソースより後ろにある全てのソースに、ま�
 
 ---
 
+## Compatibility / 対応バージョン
+
+Supports OBS Studio 31, 32, and 33. OBS 33 requires version 1.1.2 or later. On Windows, use the latest installer to install the plugin in the appropriate layouts.
+
+<small>OBS Studio 31・32・33に対応しています。OBS 33ではv1.1.2以降を使用してください。Windowsでは、対応する配置形式へインストールできる最新版のインストーラーをご利用ください。</small>
+
+---
+
 ## How to Build / ビルド方法
 
 This plugin supports both **Out-of-tree builds (Recommended)** and **In-tree builds (Optional)**.

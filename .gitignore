@@ -9,6 +9,9 @@ Thumbs.db
 
 # Build directories
 build/
+build33/
+build31/
+build32/
 docs/
 dist/
 installer/
